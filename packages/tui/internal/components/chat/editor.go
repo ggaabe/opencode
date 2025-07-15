@@ -39,6 +39,8 @@ type EditorComponent interface {
 	Clear() (tea.Model, tea.Cmd)
 	Paste() (tea.Model, tea.Cmd)
 	Newline() (tea.Model, tea.Cmd)
+	HistoryPrevious() (tea.Model, tea.Cmd)
+	HistoryNext() (tea.Model, tea.Cmd)
 	SetValue(value string)
 	SetInterruptKeyInDebounce(inDebounce bool)
 	SetExitKeyInDebounce(inDebounce bool)
@@ -50,6 +52,8 @@ type editorComponent struct {
 	spinner                spinner.Model
 	interruptKeyInDebounce bool
 	exitKeyInDebounce      bool
+	history                []string
+	historyIndex           int
 }
 
 func (m *editorComponent) Init() tea.Cmd {
@@ -357,6 +361,9 @@ func (m *editorComponent) Submit() (tea.Model, tea.Cmd) {
 		})
 	}
 
+	m.history = append(m.history, value)
+	m.historyIndex = len(m.history)
+
 	updated, cmd := m.Clear()
 	m = updated.(*editorComponent)
 	cmds = append(cmds, cmd)
@@ -400,6 +407,34 @@ func (m *editorComponent) Paste() (tea.Model, tea.Cmd) {
 
 func (m *editorComponent) Newline() (tea.Model, tea.Cmd) {
 	m.textarea.Newline()
+	return m, nil
+}
+
+func (m *editorComponent) HistoryPrevious() (tea.Model, tea.Cmd) {
+	if len(m.history) == 0 {
+		return m, nil
+	}
+	if m.historyIndex > 0 {
+		m.historyIndex--
+	}
+	m.SetValue(m.history[m.historyIndex])
+	m.textarea.CursorEnd()
+	return m, nil
+}
+
+func (m *editorComponent) HistoryNext() (tea.Model, tea.Cmd) {
+	if len(m.history) == 0 {
+		m.SetValue("")
+		return m, nil
+	}
+	if m.historyIndex < len(m.history)-1 {
+		m.historyIndex++
+		m.SetValue(m.history[m.historyIndex])
+	} else {
+		m.historyIndex = len(m.history)
+		m.SetValue("")
+	}
+	m.textarea.CursorEnd()
 	return m, nil
 }
 
@@ -487,6 +522,8 @@ func NewEditorComponent(app *app.App) EditorComponent {
 		textarea:               ta,
 		spinner:                s,
 		interruptKeyInDebounce: false,
+		history:                []string{},
+		historyIndex:           0,
 	}
 
 	return m

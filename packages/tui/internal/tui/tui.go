@@ -950,6 +950,14 @@ func (a appModel) executeCommand(command commands.Command) (tea.Model, tea.Cmd) 
 		updated, cmd := a.editor.Newline()
 		a.editor = updated.(chat.EditorComponent)
 		cmds = append(cmds, cmd)
+	case commands.HistoryPreviousCommand:
+		updated, cmd := a.editor.HistoryPrevious()
+		a.editor = updated.(chat.EditorComponent)
+		cmds = append(cmds, cmd)
+	case commands.HistoryNextCommand:
+		updated, cmd := a.editor.HistoryNext()
+		a.editor = updated.(chat.EditorComponent)
+		cmds = append(cmds, cmd)
 	case commands.MessagesFirstCommand:
 		updated, cmd := a.messages.First()
 		a.messages = updated.(chat.MessagesComponent)
