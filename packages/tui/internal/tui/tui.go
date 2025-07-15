@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,23 +65,21 @@ type appModel struct {
 	editor               chat.EditorComponent
 	messages             chat.MessagesComponent
 	completions          dialog.CompletionDialog
-	commandProvider      dialog.CompletionProvider
-	fileProvider         dialog.CompletionProvider
-	symbolsProvider      dialog.CompletionProvider
+	commandProvider      completions.CompletionProvider
+	fileProvider         completions.CompletionProvider
+	symbolsProvider      completions.CompletionProvider
 	showCompletionDialog bool
-	fileCompletionActive bool
 	leaderBinding        *key.Binding
-	isLeaderSequence     bool
-	toastManager         *toast.ToastManager
-	interruptKeyState    InterruptKeyState
-	exitKeyState         ExitKeyState
-	lastScroll           time.Time
-	messagesRight        bool
-	fileViewer           fileviewer.Model
-	lastMouse            tea.Mouse
-	fileViewerStart      int
-	fileViewerEnd        int
-	fileViewerHit        bool
+	// isLeaderSequence     bool
+	toastManager      *toast.ToastManager
+	interruptKeyState InterruptKeyState
+	exitKeyState      ExitKeyState
+	messagesRight     bool
+	fileViewer        fileviewer.Model
+	lastMouse         tea.Mouse
+	fileViewerStart   int
+	fileViewerEnd     int
+	fileViewerHit     bool
 }
 
 func (a appModel) Init() tea.Cmd {
@@ -107,44 +106,6 @@ func (a appModel) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-var BUGGED_SCROLL_KEYS = map[string]bool{
-	"0": true,
-	"1": true,
-	"2": true,
-	"3": true,
-	"4": true,
-	"5": true,
-	"6": true,
-	"7": true,
-	"8": true,
-	"9": true,
-	"M": true,
-	"m": true,
-	"[": true,
-	";": true,
-	"<": true,
-}
-
-func isScrollRelatedInput(keyString string) bool {
-	if len(keyString) == 0 {
-		return false
-	}
-
-	for _, char := range keyString {
-		charStr := string(char)
-		if !BUGGED_SCROLL_KEYS[charStr] {
-			return false
-		}
-	}
-
-	if len(keyString) > 3 &&
-		(keyString[len(keyString)-1] == 'M' || keyString[len(keyString)-1] == 'm') {
-		return true
-	}
-
-	return len(keyString) > 1
-}
-
 func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
@@ -153,8 +114,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		keyString := msg.String()
 
-		if time.Since(a.lastScroll) < time.Millisecond*100 && (BUGGED_SCROLL_KEYS[keyString] || isScrollRelatedInput(keyString)) {
-			return a, nil
+		// Handle Ctrl+Z for suspend
+		if keyString == "ctrl+z" {
+			return a, tea.Suspend
 		}
 
 		// 1. Handle active modal
@@ -184,9 +146,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// 2. Check for commands that require leader
-		if a.isLeaderSequence {
-			matches := a.app.Commands.Matches(msg, a.isLeaderSequence)
-			a.isLeaderSequence = false
+		if a.app.IsLeaderSequence {
+			matches := a.app.Commands.Matches(msg, a.app.IsLeaderSequence)
+			a.app.IsLeaderSequence = false
 			if len(matches) > 0 {
 				return a, util.CmdHandler(commands.ExecuteCommandsMsg(matches))
 			}
@@ -197,7 +159,6 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			!a.showCompletionDialog &&
 			a.editor.Value() == "" {
 			a.showCompletionDialog = true
-			a.fileCompletionActive = false
 
 			updated, cmd := a.editor.Update(msg)
 			a.editor = updated.(chat.EditorComponent)
@@ -216,7 +177,6 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if keyString == "@" &&
 			!a.showCompletionDialog {
 			a.showCompletionDialog = true
-			a.fileCompletionActive = true
 
 			updated, cmd := a.editor.Update(msg)
 			a.editor = updated.(chat.EditorComponent)
@@ -233,7 +193,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if a.showCompletionDialog {
 			switch keyString {
-			case "tab", "enter", "esc", "ctrl+c", "up", "down":
+			case "tab", "enter", "esc", "ctrl+c", "up", "down", "ctrl+p", "ctrl+n":
 				updated, cmd := a.completions.Update(msg)
 				a.completions = updated.(dialog.CompletionDialog)
 				cmds = append(cmds, cmd)
@@ -261,21 +221,21 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// 5. Check for leader key activation
 		if a.leaderBinding != nil &&
-			!a.isLeaderSequence &&
+			!a.app.IsLeaderSequence &&
 			key.Matches(msg, *a.leaderBinding) {
-			a.isLeaderSequence = true
+			a.app.IsLeaderSequence = true
 			return a, nil
 		}
 
 		// 6 Handle input clear command
 		inputClearCommand := a.app.Commands[commands.InputClearCommand]
-		if inputClearCommand.Matches(msg, a.isLeaderSequence) && a.editor.Length() > 0 {
+		if inputClearCommand.Matches(msg, a.app.IsLeaderSequence) && a.editor.Length() > 0 {
 			return a, util.CmdHandler(commands.ExecuteCommandMsg(inputClearCommand))
 		}
 
 		// 7. Handle interrupt key debounce for session interrupt
 		interruptCommand := a.app.Commands[commands.SessionInterruptCommand]
-		if interruptCommand.Matches(msg, a.isLeaderSequence) && a.app.IsBusy() {
+		if interruptCommand.Matches(msg, a.app.IsLeaderSequence) && a.app.IsBusy() {
 			switch a.interruptKeyState {
 			case InterruptKeyIdle:
 				// First interrupt key press - start debounce timer
@@ -294,7 +254,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// 8. Handle exit key debounce for app exit when using non-leader command
 		exitCommand := a.app.Commands[commands.AppExitCommand]
-		if exitCommand.Matches(msg, a.isLeaderSequence) {
+		if exitCommand.Matches(msg, a.app.IsLeaderSequence) {
 			switch a.exitKeyState {
 			case ExitKeyIdle:
 				// First exit key press - start debounce timer
@@ -312,10 +272,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// 9. Check again for commands that don't require leader (excluding interrupt when busy and exit when in debounce)
-		matches := a.app.Commands.Matches(msg, a.isLeaderSequence)
+		matches := a.app.Commands.Matches(msg, a.app.IsLeaderSequence)
 		if len(matches) > 0 {
 			// Skip interrupt key if we're in debounce mode and app is busy
-			if interruptCommand.Matches(msg, a.isLeaderSequence) && a.app.IsBusy() && a.interruptKeyState != InterruptKeyIdle {
+			if interruptCommand.Matches(msg, a.app.IsLeaderSequence) && a.app.IsBusy() && a.interruptKeyState != InterruptKeyIdle {
 				return a, nil
 			}
 			return a, util.CmdHandler(commands.ExecuteCommandsMsg(matches))
@@ -326,7 +286,6 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.editor = updatedEditor.(chat.EditorComponent)
 		return a, cmd
 	case tea.MouseWheelMsg:
-		a.lastScroll = time.Now()
 		if a.modal != nil {
 			return a, nil
 		}
@@ -399,7 +358,6 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	case dialog.CompletionDialogCloseMsg:
 		a.showCompletionDialog = false
-		a.fileCompletionActive = false
 	case opencode.EventListResponseEventInstallationUpdated:
 		return a, toast.NewSuccessToast(
 			"opencode updated to "+msg.Properties.Version+", restart to apply.",
@@ -408,55 +366,76 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case opencode.EventListResponseEventSessionDeleted:
 		if a.app.Session != nil && msg.Properties.Info.ID == a.app.Session.ID {
 			a.app.Session = &opencode.Session{}
-			a.app.Messages = []opencode.MessageUnion{}
+			a.app.Messages = []app.Message{}
 		}
 		return a, toast.NewSuccessToast("Session deleted successfully")
 	case opencode.EventListResponseEventSessionUpdated:
 		if msg.Properties.Info.ID == a.app.Session.ID {
 			a.app.Session = &msg.Properties.Info
 		}
+	case opencode.EventListResponseEventMessagePartUpdated:
+		slog.Info("message part updated", "message", msg.Properties.Part.MessageID, "part", msg.Properties.Part.ID)
+		if msg.Properties.Part.SessionID == a.app.Session.ID {
+			messageIndex := slices.IndexFunc(a.app.Messages, func(m app.Message) bool {
+				switch casted := m.Info.(type) {
+				case opencode.UserMessage:
+					return casted.ID == msg.Properties.Part.MessageID
+				case opencode.AssistantMessage:
+					return casted.ID == msg.Properties.Part.MessageID
+				}
+				return false
+			})
+			if messageIndex > -1 {
+				message := a.app.Messages[messageIndex]
+				partIndex := slices.IndexFunc(message.Parts, func(p opencode.PartUnion) bool {
+					switch casted := p.(type) {
+					case opencode.TextPart:
+						return casted.ID == msg.Properties.Part.ID
+					case opencode.FilePart:
+						return casted.ID == msg.Properties.Part.ID
+					case opencode.ToolPart:
+						return casted.ID == msg.Properties.Part.ID
+					case opencode.StepStartPart:
+						return casted.ID == msg.Properties.Part.ID
+					case opencode.StepFinishPart:
+						return casted.ID == msg.Properties.Part.ID
+					}
+					return false
+				})
+				if partIndex > -1 {
+					message.Parts[partIndex] = msg.Properties.Part.AsUnion()
+				}
+				if partIndex == -1 {
+					message.Parts = append(message.Parts, msg.Properties.Part.AsUnion())
+				}
+				a.app.Messages[messageIndex] = message
+			}
+		}
 	case opencode.EventListResponseEventMessageUpdated:
 		if msg.Properties.Info.SessionID == a.app.Session.ID {
-			exists := false
-			optimisticReplaced := false
+			matchIndex := slices.IndexFunc(a.app.Messages, func(m app.Message) bool {
+				switch casted := m.Info.(type) {
+				case opencode.UserMessage:
+					return casted.ID == msg.Properties.Info.ID
+				case opencode.AssistantMessage:
+					return casted.ID == msg.Properties.Info.ID
+				}
+				return false
+			})
 
-			// First check if this is replacing an optimistic message
-			if msg.Properties.Info.Role == opencode.MessageRoleUser {
-				// Look for optimistic messages to replace
-				for i, m := range a.app.Messages {
-					switch m := m.(type) {
-					case opencode.UserMessage:
-						if strings.HasPrefix(m.ID, "optimistic-") && m.Role == opencode.UserMessageRoleUser {
-							// Replace the optimistic message with the real one
-							a.app.Messages[i] = msg.Properties.Info.AsUnion()
-							exists = true
-							optimisticReplaced = true
-							break
-						}
-					}
+			if matchIndex > -1 {
+				match := a.app.Messages[matchIndex]
+				a.app.Messages[matchIndex] = app.Message{
+					Info:  msg.Properties.Info.AsUnion(),
+					Parts: match.Parts,
 				}
 			}
 
-			// If not replacing optimistic, check for existing message with same ID
-			if !optimisticReplaced {
-				for i, m := range a.app.Messages {
-					var id string
-					switch m := m.(type) {
-					case opencode.UserMessage:
-						id = m.ID
-					case opencode.AssistantMessage:
-						id = m.ID
-					}
-					if id == msg.Properties.Info.ID {
-						a.app.Messages[i] = msg.Properties.Info.AsUnion()
-						exists = true
-						break
-					}
-				}
-			}
-
-			if !exists {
-				a.app.Messages = append(a.app.Messages, msg.Properties.Info.AsUnion())
+			if matchIndex == -1 {
+				a.app.Messages = append(a.app.Messages, app.Message{
+					Info:  msg.Properties.Info.AsUnion(),
+					Parts: []opencode.PartUnion{},
+				})
 			}
 		}
 	case opencode.EventListResponseEventSessionError:
@@ -517,10 +496,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, toast.NewErrorToast("Failed to open session")
 		}
 		a.app.Session = msg
-		a.app.Messages = make([]opencode.MessageUnion, 0)
-		for _, message := range messages {
-			a.app.Messages = append(a.app.Messages, message.AsUnion())
-		}
+		a.app.Messages = messages
+		return a, util.CmdHandler(app.SessionLoadedMsg{})
+	case app.SessionCreatedMsg:
+		a.app.Session = msg.Session
 		return a, util.CmdHandler(app.SessionLoadedMsg{})
 	case app.ModelSelectedMsg:
 		a.app.Provider = &msg.Provider
@@ -881,7 +860,7 @@ func (a appModel) executeCommand(command commands.Command) (tea.Model, tea.Cmd) 
 			return a, nil
 		}
 		a.app.Session = &opencode.Session{}
-		a.app.Messages = []opencode.MessageUnion{}
+		a.app.Messages = []app.Message{}
 		cmds = append(cmds, util.CmdHandler(app.SessionClearedMsg{}))
 	case commands.SessionListCommand:
 		sessionDialog := dialog.NewSessionDialog(a.app)
@@ -1067,9 +1046,7 @@ func NewModel(app *app.App) tea.Model {
 		fileProvider:         fileProvider,
 		symbolsProvider:      symbolsProvider,
 		leaderBinding:        leaderBinding,
-		isLeaderSequence:     false,
 		showCompletionDialog: false,
-		fileCompletionActive: false,
 		toastManager:         toast.NewToastManager(),
 		interruptKeyState:    InterruptKeyIdle,
 		exitKeyState:         ExitKeyIdle,

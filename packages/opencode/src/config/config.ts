@@ -4,7 +4,7 @@ import { z } from "zod"
 import { App } from "../app/app"
 import { Filesystem } from "../util/filesystem"
 import { ModelsDev } from "../provider/models"
-import { mergeDeep } from "remeda"
+import { mergeDeep, pipe } from "remeda"
 import { Global } from "../global"
 import fs from "fs/promises"
 import { lazy } from "../util/lazy"
@@ -21,6 +21,17 @@ export namespace Config {
         result = mergeDeep(result, await load(resolved))
       }
     }
+
+    // Handle migration from autoshare to share field
+    if (result.autoshare === true && !result.share) {
+      result.share = "auto"
+    }
+
+    if (!result.username) {
+      const os = await import("os")
+      result.username = os.userInfo().username
+    }
+
     log.info("loaded", result)
 
     return result
@@ -117,10 +128,21 @@ export namespace Config {
       $schema: z.string().optional().describe("JSON schema reference for configuration validation"),
       theme: z.string().optional().describe("Theme name to use for the interface"),
       keybinds: Keybinds.optional().describe("Custom keybind configurations"),
-      autoshare: z.boolean().optional().describe("Share newly created sessions automatically"),
+      share: z
+        .enum(["auto", "disabled"])
+        .optional()
+        .describe("Control sharing behavior: 'auto' enables automatic sharing, 'disabled' disables all sharing"),
+      autoshare: z
+        .boolean()
+        .optional()
+        .describe("@deprecated Use 'share' field instead. Share newly created sessions automatically"),
       autoupdate: z.boolean().optional().describe("Automatically update to the latest version"),
       disabled_providers: z.array(z.string()).optional().describe("Disable providers that are loaded automatically"),
       model: z.string().describe("Model to use in the format of provider/model, eg anthropic/claude-2").optional(),
+      username: z
+        .string()
+        .optional()
+        .describe("Custom username to display in conversations instead of system username"),
       mode: z
         .object({
           build: Mode.optional(),
@@ -175,7 +197,11 @@ export namespace Config {
   export type Info = z.output<typeof Info>
 
   export const global = lazy(async () => {
-    let result = await load(path.join(Global.Path.config, "config.json"))
+    let result = pipe(
+      {},
+      mergeDeep(await load(path.join(Global.Path.config, "config.json"))),
+      mergeDeep(await load(path.join(Global.Path.config, "opencode.json"))),
+    )
 
     await import(path.join(Global.Path.config, "config"), {
       with: {
@@ -195,19 +221,47 @@ export namespace Config {
     return result
   })
 
-  async function load(path: string) {
-    const data = await Bun.file(path)
-      .json()
+  async function load(configPath: string) {
+    let text = await Bun.file(configPath)
+      .text()
       .catch((err) => {
-        if (err.code === "ENOENT") return {}
-        throw new JsonError({ path }, { cause: err })
+        if (err.code === "ENOENT") return
+        throw new JsonError({ path: configPath }, { cause: err })
       })
+    if (!text) return {}
+
+    text = text.replace(/\{env:([^}]+)\}/g, (_, varName) => {
+      return process.env[varName] || ""
+    })
+
+    const fileMatches = text.match(/"?\{file:([^}]+)\}"?/g)
+    if (fileMatches) {
+      const configDir = path.dirname(configPath)
+      for (const match of fileMatches) {
+        const filePath = match.replace(/^"?\{file:/, "").replace(/\}"?$/, "")
+        const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(configDir, filePath)
+        const fileContent = await Bun.file(resolvedPath).text()
+        text = text.replace(match, JSON.stringify(fileContent))
+      }
+    }
+
+    let data: any
+    try {
+      data = JSON.parse(text)
+    } catch (err) {
+      throw new JsonError({ path: configPath }, { cause: err as Error })
+    }
 
     const parsed = Info.safeParse(data)
-    if (parsed.success) return parsed.data
-    throw new InvalidError({ path, issues: parsed.error.issues })
+    if (parsed.success) {
+      if (!parsed.data.$schema) {
+        parsed.data.$schema = "https://opencode.ai/config.json"
+        await Bun.write(configPath, JSON.stringify(parsed.data, null, 2))
+      }
+      return parsed.data
+    }
+    throw new InvalidError({ path: configPath, issues: parsed.error.issues })
   }
-
   export const JsonError = NamedError.create(
     "ConfigJsonError",
     z.object({

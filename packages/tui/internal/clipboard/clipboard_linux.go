@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -44,7 +45,7 @@ var (
 			writeImg: []string{"xsel", "--clipboard", "--input"},
 		},
 		{
-			name:     "wl-clipboard",
+			name:     "wl-copy",
 			readCmd:  []string{"wl-paste", "-n"},
 			writeCmd: []string{"wl-copy"},
 			readImg:  []string{"wl-paste", "-t", "image/png", "-n"},
@@ -66,20 +67,31 @@ func initialize() error {
 		return nil // Already initialized
 	}
 
-	// Check which clipboard tool is available
-	for i, tool := range clipboardTools {
-		cmd := exec.Command("which", tool.name)
-		if err := cmd.Run(); err == nil {
-			clipboardTools[i].available = true
-			if selectedTool < 0 {
-				selectedTool = i
-				slog.Debug("Clipboard tool found", "tool", tool.name)
+	order := []string{"xclip", "xsel", "wl-copy"}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		order = []string{"wl-copy", "xclip", "xsel"}
+	}
+
+	for _, name := range order {
+		for i, tool := range clipboardTools {
+			if tool.name == name {
+				cmd := exec.Command("which", tool.name)
+				if err := cmd.Run(); err == nil {
+					clipboardTools[i].available = true
+					if selectedTool < 0 {
+						selectedTool = i
+						slog.Debug("Clipboard tool found", "tool", tool.name)
+					}
+				}
+				break
 			}
 		}
 	}
 
 	if selectedTool < 0 {
-		slog.Warn("No clipboard utility found on system. Copy/paste functionality will be disabled.")
+		slog.Warn(
+			"No clipboard utility found on system. Copy/paste functionality will be disabled. See https://opencode.ai/docs/troubleshooting/ for more information.",
+		)
 		return fmt.Errorf(`%w: No clipboard utility found. Install one of the following:
 
 For X11 systems:
@@ -138,7 +150,8 @@ func readText(tool struct {
 			// xclip returns error when clipboard doesn't contain requested type
 			checkCmd := exec.Command("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
 			targets, _ := checkCmd.Output()
-			if bytes.Contains(targets, []byte("image/png")) && !bytes.Contains(targets, []byte("UTF8_STRING")) {
+			if bytes.Contains(targets, []byte("image/png")) &&
+				!bytes.Contains(targets, []byte("UTF8_STRING")) {
 				return nil, errUnavailable
 			}
 		}
@@ -168,7 +181,8 @@ func readImage(tool struct {
 	}
 
 	// Verify it's PNG data
-	if len(out) < 8 || !bytes.Equal(out[:8], []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) {
+	if len(out) < 8 ||
+		!bytes.Equal(out[:8], []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) {
 		return nil, errUnavailable
 	}
 
