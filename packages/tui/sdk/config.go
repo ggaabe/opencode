@@ -518,6 +518,10 @@ type Keybinds struct {
 	InputPaste string `json:"input_paste,required"`
 	// Submit input
 	InputSubmit string `json:"input_submit,required"`
+	// Previous input history
+	HistoryPrevious string `json:"history_previous,required"`
+	// Next input history
+	HistoryNext string `json:"history_next,required"`
 	// Leader key for keybind combinations
 	Leader string `json:"leader,required"`
 	// Copy message
@@ -580,6 +584,8 @@ type keybindsJSON struct {
 	InputNewline         apijson.Field
 	InputPaste           apijson.Field
 	InputSubmit          apijson.Field
+	HistoryPrevious      apijson.Field
+	HistoryNext          apijson.Field
 	Leader               apijson.Field
 	MessagesCopy         apijson.Field
 	MessagesFirst        apijson.Field

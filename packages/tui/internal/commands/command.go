@@ -106,6 +106,8 @@ const (
 	InputPasteCommand           CommandName = "input_paste"
 	InputSubmitCommand          CommandName = "input_submit"
 	InputNewlineCommand         CommandName = "input_newline"
+	HistoryPreviousCommand      CommandName = "history_previous"
+	HistoryNextCommand          CommandName = "history_next"
 	MessagesPageUpCommand       CommandName = "messages_page_up"
 	MessagesPageDownCommand     CommandName = "messages_page_down"
 	MessagesHalfPageUpCommand   CommandName = "messages_half_page_up"
@@ -263,6 +265,16 @@ func LoadFromConfig(config *opencode.Config) CommandRegistry {
 			Name:        InputNewlineCommand,
 			Description: "insert newline",
 			Keybindings: parseBindings("shift+enter", "ctrl+j"),
+		},
+		{
+			Name:        HistoryPreviousCommand,
+			Description: "previous input",
+			Keybindings: parseBindings("up"),
+		},
+		{
+			Name:        HistoryNextCommand,
+			Description: "next input",
+			Keybindings: parseBindings("down"),
 		},
 		{
 			Name:        MessagesPageUpCommand,
